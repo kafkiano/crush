@@ -2,41 +2,55 @@ package agent
 
 import (
 	"context"
-	_ "embed"
 
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/config"
 )
 
-//go:embed templates/coder.md.tpl
-var coderPromptTmpl []byte
-
-//go:embed templates/task.md.tpl
-var taskPromptTmpl []byte
-
-//go:embed templates/initialize.md.tpl
-var initializePromptTmpl []byte
-
-func coderPrompt(opts ...prompt.Option) (*prompt.Prompt, error) {
-	systemPrompt, err := prompt.NewPrompt("coder", string(coderPromptTmpl), opts...)
+func architectPrompt(cfg *config.Config, opts ...prompt.Option) (*prompt.Prompt, error) {
+	template, err := LoadTemplate("architect.md.tpl", cfg, opts...)
+	if err != nil {
+		return nil, err
+	}
+	systemPrompt, err := prompt.NewPrompt("architect", template, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return systemPrompt, nil
 }
 
-func taskPrompt(opts ...prompt.Option) (*prompt.Prompt, error) {
-	systemPrompt, err := prompt.NewPrompt("task", string(taskPromptTmpl), opts...)
+func coderPrompt(cfg *config.Config, opts ...prompt.Option) (*prompt.Prompt, error) {
+	template, err := LoadTemplate("coder.md.tpl", cfg, opts...)
+	if err != nil {
+		return nil, err
+	}
+	systemPrompt, err := prompt.NewPrompt("coder", template, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return systemPrompt, nil
 }
 
-func InitializePrompt(cfg *config.ConfigStore) (string, error) {
-	systemPrompt, err := prompt.NewPrompt("initialize", string(initializePromptTmpl))
+func taskPrompt(cfg *config.Config, opts ...prompt.Option) (*prompt.Prompt, error) {
+	template, err := LoadTemplate("task.md.tpl", cfg, opts...)
+	if err != nil {
+		return nil, err
+	}
+	systemPrompt, err := prompt.NewPrompt("task", template, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return systemPrompt, nil
+}
+
+func InitializePrompt(store *config.ConfigStore) (string, error) {
+	template, err := LoadTemplate("initialize.md.tpl", store.Config())
 	if err != nil {
 		return "", err
 	}
-	return systemPrompt.Build(context.Background(), "", "", cfg)
+	systemPrompt, err := prompt.NewPrompt("initialize", template)
+	if err != nil {
+		return "", err
+	}
+	return systemPrompt.Build(context.Background(), "", "", store)
 }

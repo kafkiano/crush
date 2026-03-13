@@ -166,19 +166,19 @@ func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPro
 }
 
 func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel) (SessionAgent, error) {
+	cfg, err := config.Init(env.workingDir, "", false)
+	if err != nil {
+		return nil, err
+	}
 	fixedTime := func() time.Time {
 		t, _ := time.Parse("1/2/2006", "1/1/2025")
 		return t
 	}
-	prompt, err := coderPrompt(
+	prompt, err := coderPrompt(cfg.Config(),
 		prompt.WithTimeFunc(fixedTime),
 		prompt.WithPlatform("linux"),
 		prompt.WithWorkingDir(filepath.ToSlash(env.workingDir)),
 	)
-	if err != nil {
-		return nil, err
-	}
-	cfg, err := config.Init(env.workingDir, "", false)
 	if err != nil {
 		return nil, err
 	}

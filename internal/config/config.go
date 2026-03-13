@@ -26,6 +26,11 @@ const (
 	defaultInitializeAs  = "AGENTS.md"
 )
 
+var defaultTemplatePaths = []string{
+	"~/.config/crush/templates",
+	"./.crush/templates",
+}
+
 var defaultContextPaths = []string{
 	".github/copilot-instructions.md",
 	".cursorrules",
@@ -58,8 +63,9 @@ const (
 )
 
 const (
-	AgentCoder string = "coder"
-	AgentTask  string = "task"
+	AgentCoder     string = "coder"
+	AgentTask      string = "task"
+	AgentArchitect string = "architect"
 )
 
 type SelectedModel struct {
@@ -242,6 +248,7 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 type Options struct {
 	ContextPaths              []string     `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
 	SkillsPaths               []string     `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
+	TemplatePaths             []string     `json:"template_paths,omitempty" jsonschema:"description=Paths to directories containing custom system prompt templates (coder.md.tpl, task.md.tpl, initialize.md.tpl),example=~/.config/crush/templates,example=./.crush/templates"`
 	TUI                       *TUIOptions  `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Debug                     bool         `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
 	DebugLSP                  bool         `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
@@ -513,6 +520,15 @@ func (c *Config) SetupAgents() {
 	allowedTools := resolveAllowedTools(allToolNames(), c.Options.DisabledTools)
 
 	agents := map[string]Agent{
+		AgentArchitect: {
+			ID:           AgentArchitect,
+			Name:         "Architect",
+			Description:  "An agent for interactive TUI mode.",
+			Model:        SelectedModelTypeLarge,
+			ContextPaths: c.Options.ContextPaths,
+			AllowedTools: allowedTools,
+		},
+
 		AgentCoder: {
 			ID:           AgentCoder,
 			Name:         "Coder",

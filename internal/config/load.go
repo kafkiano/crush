@@ -407,6 +407,11 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	slices.Sort(c.Options.ContextPaths)
 	c.Options.ContextPaths = slices.Compact(c.Options.ContextPaths)
 
+	// Add the default template paths if not already present.
+	c.Options.TemplatePaths = append(defaultTemplatePaths, c.Options.TemplatePaths...)
+	slices.Sort(c.Options.TemplatePaths)
+	c.Options.TemplatePaths = slices.Compact(c.Options.TemplatePaths)
+
 	// Add the default skills directories if not already present.
 	for _, dir := range GlobalSkillsDirs() {
 		if !slices.Contains(c.Options.SkillsPaths, dir) {

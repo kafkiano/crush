@@ -47,6 +47,7 @@ import (
 
 // Coordinator errors.
 var (
+	errArchitectAgentNotConfigured     = errors.New("architect agent not configured")
 	errCoderAgentNotConfigured         = errors.New("coder agent not configured")
 	errModelProviderNotConfigured      = errors.New("model provider not configured")
 	errLargeModelNotSelected           = errors.New("large model not selected")
@@ -112,13 +113,13 @@ func NewCoordinator(
 		agents:      make(map[string]SessionAgent),
 	}
 
-	agentCfg, ok := cfg.Config().Agents[config.AgentCoder]
+	// Use architect agent for interactive mode
+	agentCfg, ok := cfg.Config().Agents[config.AgentArchitect]
 	if !ok {
-		return nil, errCoderAgentNotConfigured
+		return nil, errArchitectAgentNotConfigured
 	}
 
-	// TODO: make this dynamic when we support multiple agents
-	prompt, err := coderPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	prompt, err := architectPrompt(c.cfg.Config(), prompt.WithWorkingDir(c.cfg.WorkingDir()))
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +129,7 @@ func NewCoordinator(
 		return nil, err
 	}
 	c.currentAgent = agent
-	c.agents[config.AgentCoder] = agent
+	c.agents[config.AgentArchitect] = agent
 	return c, nil
 }
 
@@ -404,6 +405,9 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 			return err
 		}
 		result.SetSystemPrompt(systemPrompt)
+
+		slog.Debug("System prompt built", "provider", large.Model.Provider(), "model", large.Model.Model(), "prompt", systemPrompt)
+
 		return nil
 	})
 
