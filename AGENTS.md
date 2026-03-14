@@ -24,9 +24,11 @@ internal/
     provider.go                    Provider configuration and model resolution
   agent/
     agent.go                       SessionAgent: runs LLM conversations per session
-    coordinator.go                 Coordinator: manages named agents ("coder", "task")
+    coordinator.go                 Coordinator: manages named agents ("architect", "coder", "task")
     prompts.go                     Loads Go-template system prompts
-    templates/                     System prompt templates (coder.md.tpl, task.md.tpl, etc.)
+    template_loader.go             Template loading from disk or embedded fallbacks
+    prompt/prompt.go               Prompt building with context injection
+    templates/                     System prompt templates (architect.md.tpl, coder.md.tpl, etc.)
     tools/                         All built-in tools (bash, edit, view, grep, glob, etc.)
       mcp/                         MCP client integration
   session/session.go               Session CRUD backed by SQLite
@@ -44,6 +46,171 @@ internal/
   filetracker/                     Tracks files touched per session
   history/                         Prompt history
 ```
+
+## Model → Agent Architecture
+
+Crush uses a **model → agent → template** hierarchy to route LLM requests:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CLI Entry Point                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ./crush          → Interactive TUI  → Architect Agent → architect.md.tpl   │
+│  ./crush run      → Non-interactive → Coder Agent     → coder.md.tpl        │
+│  ./crush (subagent) → Task Agent      → task.md.tpl                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Agent Configuration                                │
+│  internal/config/config.go:SetupAgents()                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  AgentArchitect:                                                             │
+│    Model: SelectedModelTypeLarge (e.g., claude-sonnet-4, gpt-4o)            │
+│    Tools: ALL tools (bash, edit, view, glob, grep, etc.)                    │
+│    MCP:  All configured MCP servers                                          │
+│                                                                              │
+│  AgentCoder:                                                                 │
+│    Model: SelectedModelTypeLarge                                             │
+│    Tools: ALL tools                                                          │
+│    MCP:  All configured MCP servers                                          │
+│                                                                              │
+│  AgentTask:                                                                  │
+│    Model: SelectedModelTypeLarge                                             │
+│    Tools: READ-ONLY (glob, grep, ls, sourcegraph, view)                     │
+│    MCP:  NONE (isolated search agent)                                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Model Resolution                                   │
+│  internal/config/config.go:GetModelByType()                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  SelectedModelTypeLarge  → cfg.Models["large"] → provider/model lookup      │
+│  SelectedModelTypeSmall  → cfg.Models["small"] → provider/model lookup      │
+│                                                                              │
+│  Example crush.json:                                                         │
+│    "models": {                                                               │
+│      "large": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+│      "small": { "provider": "openai", "model": "gpt-4.1-mini" }             │
+│    }                                                                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Agent Types
+
+| Agent | Constant | Template | Mode | Tools | Use Case |
+|-------|----------|----------|------|-------|----------|
+| **Architect** | `AgentArchitect` | `architect.md.tpl` | Interactive TUI | Full | Primary user-facing agent for interactive sessions |
+| **Coder** | `AgentCoder` | `coder.md.tpl` | Non-interactive (`crush run`) | Full | Headless execution for CI/CD, scripts |
+| **Task** | `AgentTask` | `task.md.tpl` | Sub-agent | Read-only | Parallel search/context gathering |
+
+### Key Implementation Files
+
+- [`internal/config/config.go:65-68`](internal/config/config.go:65) — Agent constants
+- [`internal/config/config.go:519-553`](internal/config/config.go:519) — `SetupAgents()` configuration
+- [`internal/agent/coordinator.go:93-134`](internal/agent/coordinator.go:93) — `NewCoordinator()` uses architect agent
+- [`internal/agent/prompts.go`](internal/agent/prompts.go) — Prompt builder functions
+- [`internal/agent/template_loader.go`](internal/agent/template_loader.go) — Template loading with disk override
+
+## Template System
+
+### Template Loading Order
+
+Templates are loaded from disk first, falling back to embedded templates:
+
+1. **Disk paths** (in order):
+   - `~/.config/crush/templates/{name}.md.tpl`
+   - `./.crush/templates/{name}.md.tpl`
+
+2. **Embedded fallback**:
+   - `internal/agent/templates/{name}.md.tpl`
+
+### Template Data Injection
+
+Templates receive [`prompt.PromptDat`](internal/agent/prompt/prompt.go:29) at render time:
+
+```go
+type PromptDat struct {
+    Provider      string
+    Model         string
+    Config        config.Config
+    WorkingDir    string
+    IsGitRepo     bool
+    Platform      string
+    Date          string
+    GitStatus     string
+    ContextFiles  []ContextFile  // AGENTS.md, CRUSH.md, etc.
+    AvailSkillXML string         // Available skill definitions
+}
+```
+
+### Custom Templates
+
+To override a template, create a file in either template path:
+
+```bash
+# Override architect template
+mkdir -p ~/.config/crush/templates
+cat > ~/.config/crush/templates/architect.md.tpl << 'EOF'
+# Custom Architect Prompt
+Your custom instructions here...
+{{range .ContextFiles}}
+<memory path="{{.Path}}">
+{{.Content}}
+</memory>
+{{end}}
+EOF
+```
+
+## Debug & Prompt Debugging
+
+### Enable Debug Logging
+
+```bash
+# Interactive mode with debug
+./crush --debug
+
+# Non-interactive with verbose output
+./crush run --verbose "your prompt"
+```
+
+### View Logs
+
+```bash
+# Tail recent logs
+./crush logs --tail 100
+
+# Follow logs in real-time
+./crush logs --follow
+
+# Logs location
+cat ~/.crush/logs/crush.log
+```
+
+### Debug System Prompts
+
+To inspect the rendered system prompt:
+
+1. Add a marker to your custom template:
+   ```bash
+   echo "# MARKER: CUSTOM_ARCHITECT_001" > ~/.config/crush/templates/architect.md.tpl
+   ```
+
+2. Run crush and check logs:
+   ```bash
+   ./crush --debug
+   crush logs --tail 100 | grep "MARKER"
+   ```
+
+3. The system prompt is logged when the agent initializes
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `CRUSH_UI_DEBUG=true` | Visual TUI rerender debugging (flashing rectangles) |
+| `CRUSH_DATA_DIR` | Override data directory location |
 
 ### Key Dependency Roles
 
