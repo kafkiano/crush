@@ -1229,23 +1229,39 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, msg.Cmd)
 		}
 
-	// Session dialog messages
+	// Session dialog messages.
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.loadSession(msg.Session.ID))
 
-	// Open dialog message
+	// Open dialog message.
 	case dialog.ActionOpenDialog:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		if cmd := m.openDialog(msg.DialogID); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 
-	// Command dialog messages
+	// Command dialog messages.
 	case dialog.ActionToggleYoloMode:
 		yolo := !m.com.App.Permissions.SkipRequests()
 		m.com.App.Permissions.SetSkipRequests(yolo)
 		m.setEditorPrompt(yolo)
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionToggleNotifications:
+		cfg := m.com.Config()
+		if cfg != nil && cfg.Options != nil {
+			disabled := !cfg.Options.DisableNotifications
+			cfg.Options.DisableNotifications = disabled
+			if err := m.com.Store().SetConfigField(config.ScopeGlobal, "options.disable_notifications", disabled); err != nil {
+				cmds = append(cmds, util.ReportError(err))
+			} else {
+				status := "enabled"
+				if disabled {
+					status = "disabled"
+				}
+				cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Notifications "+status)))
+			}
+		}
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionNewSession:
 		if m.isAgentBusy() {
@@ -1310,6 +1326,27 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 				status = "enabled"
 			}
 			return util.NewInfoMsg("Thinking mode " + status)
+		})
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionToggleTransparentBackground:
+		cmds = append(cmds, func() tea.Msg {
+			cfg := m.com.Config()
+			if cfg == nil {
+				return util.ReportError(errors.New("configuration not found"))()
+			}
+
+			isTransparent := cfg.Options != nil && cfg.Options.TUI.Transparent != nil && *cfg.Options.TUI.Transparent
+			newValue := !isTransparent
+			if err := m.com.Store().SetTransparentBackground(config.ScopeGlobal, newValue); err != nil {
+				return util.ReportError(err)()
+			}
+			m.isTransparent = newValue
+
+			status := "disabled"
+			if newValue {
+				status = "enabled"
+			}
+			return util.NewInfoMsg("Transparent background " + status)
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
