@@ -782,9 +782,8 @@ func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, optio
 	return google.New(opts...)
 }
 
-func (c *coordinator) buildHyperProvider(baseURL, apiKey string) (fantasy.Provider, error) {
+func (c *coordinator) buildHyperProvider(apiKey string) (fantasy.Provider, error) {
 	opts := []hyper.Option{
-		hyper.WithBaseURL(baseURL),
 		hyper.WithAPIKey(apiKey),
 	}
 	if c.cfg.Config().Options.Debug {
@@ -846,7 +845,7 @@ func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model con
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
 	case hyper.Name:
-		return c.buildHyperProvider(baseURL, apiKey)
+		return c.buildHyperProvider(apiKey)
 	default:
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}
