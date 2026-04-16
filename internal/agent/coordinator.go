@@ -62,6 +62,7 @@ type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	RunAs(ctx context.Context, agentName, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -85,6 +86,7 @@ type coordinator struct {
 	notify      pubsub.Publisher[notify.Notification]
 
 	currentAgent SessionAgent
+	coderAgent   SessionAgent
 	agents       map[string]SessionAgent
 
 	readyWg errgroup.Group
@@ -119,22 +121,41 @@ func NewCoordinator(
 		return nil, errArchitectAgentNotConfigured
 	}
 
-	prompt, err := architectPrompt(c.cfg.Config(), prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	archPrompt, err := architectPrompt(c.cfg.Config(), prompt.WithWorkingDir(c.cfg.WorkingDir()))
 	if err != nil {
 		return nil, err
 	}
 
-	agent, err := c.buildAgent(ctx, prompt, agentCfg, false)
+	agent, err := c.buildAgent(ctx, archPrompt, agentCfg, false)
 	if err != nil {
 		return nil, err
 	}
 	c.currentAgent = agent
 	c.agents[config.AgentArchitect] = agent
+
+	// Build coder agent for non-interactive runs
+	coderAgentCfg, ok := cfg.Config().Agents[config.AgentCoder]
+	if !ok {
+		return nil, errCoderAgentNotConfigured
+	}
+
+	coderSystemPrompt, err := coderPrompt(c.cfg.Config(), prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	if err != nil {
+		return nil, err
+	}
+
+	coderAgent, err := c.buildAgent(ctx, coderSystemPrompt, coderAgentCfg, false)
+	if err != nil {
+		return nil, err
+	}
+	c.agents[config.AgentCoder] = coderAgent
+	c.coderAgent = coderAgent
+
 	return c, nil
 }
 
-// Run implements Coordinator.
-func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+// runWithAgent runs the agent with the given SessionAgent.
+func (c *coordinator) runWithAgent(ctx context.Context, agent SessionAgent, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -144,7 +165,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 		return nil, fmt.Errorf("failed to update models: %w", err)
 	}
 
-	model := c.currentAgent.Model()
+	model := agent.Model()
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -176,7 +197,7 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	}
 
 	run := func() (*fantasy.AgentResult, error) {
-		return c.currentAgent.Run(ctx, SessionAgentCall{
+		return agent.Run(ctx, SessionAgentCall{
 			SessionID:        sessionID,
 			Prompt:           prompt,
 			Attachments:      attachments,
@@ -211,6 +232,23 @@ func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, 
 	}
 
 	return result, originalErr
+}
+
+// Run implements Coordinator.
+func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	return c.runWithAgent(ctx, c.currentAgent, sessionID, prompt, attachments...)
+}
+
+// RunAs runs the agent with the specified agent name.
+func (c *coordinator) RunAs(ctx context.Context, agentName, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	switch agentName {
+	case config.AgentCoder:
+		return c.runWithAgent(ctx, c.coderAgent, sessionID, prompt, attachments...)
+	case config.AgentArchitect:
+		return c.runWithAgent(ctx, c.currentAgent, sessionID, prompt, attachments...)
+	default:
+		return c.Run(ctx, sessionID, prompt, attachments...)
+	}
 }
 
 func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
@@ -892,18 +930,25 @@ func (c *coordinator) UpdateModels(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	// Update architect agent
 	c.currentAgent.SetModels(large, small)
-
-	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
-	if !ok {
-		return errCoderAgentNotConfigured
-	}
-
-	tools, err := c.buildTools(ctx, agentCfg)
+	archCfg := c.cfg.Config().Agents[config.AgentArchitect]
+	archTools, err := c.buildTools(ctx, archCfg)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetTools(tools)
+	c.currentAgent.SetTools(archTools)
+
+	// Update coder agent
+	c.coderAgent.SetModels(large, small)
+	coderCfg := c.cfg.Config().Agents[config.AgentCoder]
+	coderTools, err := c.buildTools(ctx, coderCfg)
+	if err != nil {
+		return err
+	}
+	c.coderAgent.SetTools(coderTools)
+
 	return nil
 }
 

@@ -97,14 +97,6 @@ Crush uses a **model → agent → template** hierarchy to route LLM requests:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Agent Types
-
-| Agent | Constant | Template | Mode | Tools | Use Case |
-|-------|----------|----------|------|-------|----------|
-| **Architect** | `AgentArchitect` | `architect.md.tpl` | Interactive TUI | Full | Primary user-facing agent for interactive sessions |
-| **Coder** | `AgentCoder` | `coder.md.tpl` | Non-interactive (`crush run`) | Full | Headless execution for CI/CD, scripts |
-| **Task** | `AgentTask` | `task.md.tpl` | Sub-agent | Read-only | Parallel search/context gathering |
-
 ### Key Implementation Files
 
 - [`internal/config/config.go:65-68`](internal/config/config.go:65) — Agent constants
