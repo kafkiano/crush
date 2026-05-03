@@ -24,13 +24,18 @@ internal/
     provider.go                    Provider configuration and model resolution
   agent/
     agent.go                       SessionAgent: runs LLM conversations per session
-    coordinator.go                 Coordinator: manages named agents ("architect", "coder", "task")
+    coordinator.go                 Coordinator: manages named agents ("coder", "task")
+    hooked_tool.go                 Decorator that runs PreToolUse hooks before tool execution
     prompts.go                     Loads Go-template system prompts
     template_loader.go             Template loading from disk or embedded fallbacks
     prompt/prompt.go               Prompt building with context injection
     templates/                     System prompt templates (architect.md.tpl, coder.md.tpl, etc.)
     tools/                         All built-in tools (bash, edit, view, grep, glob, etc.)
       mcp/                         MCP client integration
+  hooks/                           Hook engine: runs user shell commands on hook events
+    hooks.go                       Decision types, aggregation logic, event constants
+    runner.go                      Parallel hook execution, timeout, dedup
+    input.go                       Stdin payload builder, env vars, stdout parsing (Crush + Claude Code compat)
   session/session.go               Session CRUD backed by SQLite
   message/                         Message model and content types
   db/                              SQLite via sqlc, with migrations
@@ -229,6 +234,12 @@ To inspect the rendered system prompt:
   generated code in `internal/db/`. Migrations in `internal/db/migrations/`.
 - **Pub/sub**: `internal/pubsub` for decoupled communication between agent,
   UI, and services.
+- **Hooks**: User-defined shell commands in `crush.json` that fire before
+  tool execution. The engine (`internal/hooks/`) is independent of fantasy
+  and agent — it takes inputs, runs commands, returns decisions. The
+  `hookedTool` decorator in `internal/agent/hooked_tool.go` wraps tools at
+  the coordinator level. Hooks run before permission checks. See
+  `HOOKS.md` for the user-facing protocol.
 - **CGO disabled**: builds with `CGO_ENABLED=0` and
   `GOEXPERIMENT=greenteagc`.
 
