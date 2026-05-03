@@ -49,3 +49,4 @@ inline or delegates to a helper function.
 | Command | File | Description |
 |---------|------|-------------|
 | `jq` | `jq.go` | JSON processor using `github.com/itchyny/gojq` |
+| `crush-consolidate` | `consolidate.go` | Extract session data from crush SQLite DB for memory consolidation |

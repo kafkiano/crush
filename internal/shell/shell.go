@@ -256,6 +256,9 @@ func (s *Shell) builtinHandler() func(next interp.ExecHandlerFunc) interp.ExecHa
 			case "jq":
 				hc := interp.HandlerCtx(ctx)
 				return handleJQ(args, hc.Stdin, hc.Stdout, hc.Stderr)
+			case "crush-consolidate":
+				hc := interp.HandlerCtx(ctx)
+				return handleConsolidate(args, s.cwd, hc.Stdin, hc.Stdout, hc.Stderr)
 			default:
 				return next(ctx, args)
 			}

@@ -54,6 +54,13 @@ const (
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
+
+	// Passive context trimming thresholds (fractions of context window)
+	reminderUsageThreshold   = 0.6  // 60% — first consolidation reminder
+	reminderTokenInterval    = 0.1  // 10% of CW between periodic reminders
+	trimUsageThreshold       = 0.75 // 75% — passive trim trigger
+	trimMessageRatio         = 0.3  // trim oldest 30% of active messages
+	trimMinRemainingMessages = 4    // never trim below this many messages
 )
 
 var userAgent = fmt.Sprintf("Charm-Crush/%s (https://charm.land/crush)", version.Version)
@@ -63,6 +70,16 @@ var titlePrompt []byte
 
 //go:embed templates/summary.md
 var summaryPrompt []byte
+
+const consolidationPrompt = `Context checkpoint: your context window is filling up. Older messages will be trimmed soon to keep context manageable.
+
+Before trimming happens, save important findings to persistent memory (cuba-memorys):
+- Non-obvious facts discovered during this session
+- Architectural decisions and their rationale
+- Errors encountered and their solutions
+- Current task state and next steps
+
+After saving to memory, continue your work. Use cuba_faro to recover any trimmed details later.`
 
 // Used to remove <think> tags from generated titles.
 var (
@@ -82,6 +99,14 @@ type SessionAgentCall struct {
 	FrequencyPenalty *float64
 	PresencePenalty  *float64
 	NonInteractive   bool
+	IsConsolidation  bool // marks soft-truncate consolidation messages
+}
+
+// consolidationTracker tracks reminder state per session to control cadence.
+type consolidationTracker struct {
+	mu                 sync.Mutex
+	firstReminderSent  bool
+	lastReminderTokens int64
 }
 
 type SessionAgent interface {
@@ -120,8 +145,9 @@ type sessionAgent struct {
 	isYolo               bool
 	notify               pubsub.Publisher[notify.Notification]
 
-	messageQueue   *csync.Map[string, []SessionAgentCall]
-	activeRequests *csync.Map[string, context.CancelFunc]
+	messageQueue       *csync.Map[string, []SessionAgentCall]
+	activeRequests     *csync.Map[string, context.CancelFunc]
+	consolidationState *sync.Map // map[string]*consolidationTracker, keyed by session ID
 }
 
 type SessionAgentOptions struct {
@@ -153,8 +179,9 @@ func NewSessionAgent(
 		tools:                csync.NewSliceFrom(opts.Tools),
 		isYolo:               opts.IsYolo,
 		notify:               opts.Notify,
-		messageQueue:         csync.NewMap[string, []SessionAgentCall](),
-		activeRequests:       csync.NewMap[string, context.CancelFunc](),
+		messageQueue:       csync.NewMap[string, []SessionAgentCall](),
+		activeRequests:     csync.NewMap[string, context.CancelFunc](),
+		consolidationState: &sync.Map{},
 	}
 }
 
@@ -214,6 +241,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	currentSession, err := a.sessions.Get(ctx, call.SessionID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+
+	// Passive trimming: shed oldest messages if context is getting full.
+	if trimErr := a.trimContext(ctx, &currentSession); trimErr != nil {
+		slog.Warn("Failed to trim context", "error", trimErr)
 	}
 
 	msgs, err := a.getSessionMessages(ctx, currentSession)
@@ -432,6 +464,39 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		StopWhen: []fantasy.StopCondition{
+			// Soft threshold — periodic consolidation reminder
+			func(_ []fantasy.StepResult) bool {
+				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				if cw == 0 || a.disableAutoSummarize {
+					return false
+				}
+				tokens := currentSession.CompletionTokens + currentSession.PromptTokens
+				usage := float64(tokens) / float64(cw)
+				if usage < reminderUsageThreshold {
+					return false
+				}
+				tracker, _ := a.consolidationState.LoadOrStore(
+					call.SessionID, &consolidationTracker{},
+				)
+				t := tracker.(*consolidationTracker)
+				t.mu.Lock()
+				defer t.mu.Unlock()
+
+				shouldRemind := false
+				if !t.firstReminderSent {
+					shouldRemind = true
+				} else if tokens-t.lastReminderTokens >= int64(float64(cw)*reminderTokenInterval) {
+					shouldRemind = true
+				}
+
+				if shouldRemind && !a.hasConsolidationInQueue(call.SessionID) {
+					a.queueConsolidation(call)
+					t.firstReminderSent = true
+					t.lastReminderTokens = tokens
+				}
+				return false // never break the loop
+			},
+			// Hard threshold — emergency auto-summarize
 			func(_ []fantasy.StepResult) bool {
 				cw := int64(largeModel.CatwalkCfg.ContextWindow)
 				// If context window is unknown (0), skip auto-summarize
@@ -862,6 +927,67 @@ func filterOrphanedToolResults(m message.Message, knownToolCallIDs map[string]st
 	msg := aiMsgs[0]
 	msg.Content = validParts
 	return msg, true
+}
+
+// trimContext passively trims older messages when context usage exceeds the
+// trim threshold. It advances SummaryMessageID past the oldest messages,
+// which causes getSessionMessages() to exclude them on the next load.
+func (a *sessionAgent) trimContext(ctx context.Context, sess *session.Session) error {
+	cw := int64(a.largeModel.Get().CatwalkCfg.ContextWindow)
+	if cw == 0 {
+		return nil
+	}
+	tokens := sess.CompletionTokens + sess.PromptTokens
+	usage := float64(tokens) / float64(cw)
+	if usage < trimUsageThreshold {
+		return nil
+	}
+
+	msgs, err := a.messages.List(ctx, sess.ID)
+	if err != nil {
+		return fmt.Errorf("trim: list messages: %w", err)
+	}
+
+	// Find the current boundary.
+	startIdx := 0
+	if sess.SummaryMessageID != "" {
+		for i, msg := range msgs {
+			if msg.ID == sess.SummaryMessageID {
+				startIdx = i
+				break
+			}
+		}
+	}
+
+	activeCount := len(msgs) - startIdx
+	if activeCount <= trimMinRemainingMessages {
+		return nil
+	}
+
+	trimCount := max(1, int(float64(activeCount)*trimMessageRatio))
+	newStartIdx := startIdx + trimCount
+
+	// Don't trim below the minimum remaining.
+	if newStartIdx > len(msgs)-trimMinRemainingMessages {
+		newStartIdx = len(msgs) - trimMinRemainingMessages
+	}
+	if newStartIdx <= startIdx {
+		return nil
+	}
+
+	sess.SummaryMessageID = msgs[newStartIdx].ID
+	sess.PromptTokens = 0 // recalculated by next LLM call
+
+	_, err = a.sessions.Save(ctx, *sess)
+	if err != nil {
+		return fmt.Errorf("trim: save session: %w", err)
+	}
+	slog.Info("Passive context trim",
+		"session_id", sess.ID,
+		"trimmed_messages", newStartIdx-startIdx,
+		"remaining_messages", len(msgs)-newStartIdx,
+	)
+	return nil
 }
 
 // syntheticToolResultsForOrphanedCalls returns a tool message containing
@@ -1317,4 +1443,34 @@ func buildSummaryPrompt(todos []session.Todo) string {
 		sb.WriteString("Instruct the resuming assistant to use the `todos` tool to continue tracking progress on these tasks.")
 	}
 	return sb.String()
+}
+
+// hasConsolidationInQueue checks if a consolidation message is already queued for the session.
+func (a *sessionAgent) hasConsolidationInQueue(sessionID string) bool {
+	queued, ok := a.messageQueue.Get(sessionID)
+	if !ok {
+		return false
+	}
+	for _, call := range queued {
+		if call.IsConsolidation {
+			return true
+		}
+	}
+	return false
+}
+
+// queueConsolidation queues a consolidation message at the front of the message queue.
+func (a *sessionAgent) queueConsolidation(call SessionAgentCall) {
+	consolidationCall := SessionAgentCall{
+		SessionID:       call.SessionID,
+		IsConsolidation: true,
+		Prompt:          consolidationPrompt,
+	}
+	existing, ok := a.messageQueue.Get(call.SessionID)
+	if !ok {
+		existing = []SessionAgentCall{}
+	}
+	// Insert at front — consolidate before processing other queued messages
+	existing = append([]SessionAgentCall{consolidationCall}, existing...)
+	a.messageQueue.Set(call.SessionID, existing)
 }
