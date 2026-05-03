@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Persistent memory consolidation and retrieval via cuba-memorys MCP. Activates automatically at session start (RECALL) and should be triggered at session end (CONSOLIDATE). Provides scripts to extract session data from the crush SQLite database for structured memory storage. Use when starting a new session, ending a session, or when the user asks about past work, decisions, or errors.
+description: Persistent memory consolidation and retrieval via cuba-memorys MCP. Activates automatically at session start (RECALL) and should be triggered at session end (CONSOLIDATE). Provides the crush-consolidate builtin to extract session data from the crush SQLite database for structured memory storage. Use when starting a new session, ending a session, or when the user asks about past work, decisions, or errors.
 ---
 
 # Memory — Persistent Knowledge Across Sessions
@@ -34,22 +34,22 @@ Run this at the beginning of **every** session, before responding to the user.
    don't dump it all at the user. Mention past context only when directly
    relevant.
 
-4. **Check pending consolidation** — read `.crush/memory/pending.jsonl` if it
-   exists. If there are unprocessed sessions, process them via ROUTINE 2
-   before continuing.
+4. **Check for unconsolidated sessions** — run `crush-consolidate --stats --all-unconsolidated`
+    for a quick summary. If sessions are found, process them via ROUTINE 2 before
+    continuing. You can also use `--since 24h` to catch recent sessions.
 
 ### ROUTINE 2: CONSOLIDATE (session end / significant milestones)
 
 Run this when a session has produced meaningful work — a bug fixed, a decision
 made, a pattern discovered, an architecture analyzed.
 
-1. **Extract session data** using the consolidation script:
-   ```bash
-   bash .agents/skills/memory/scripts/consolidate.sh --last --verbose
-   ```
-   This reads `.crush/crush.db` and outputs the session's message history in
-   a structured text format. Use `--verbose` to see truncated content previews
-   for judgment. Omit `--verbose` for just tool names and line counts.
+1. **Extract session data** using the crush-consolidate builtin:
+    ```bash
+    crush-consolidate --last --verbose
+    ```
+    This reads `.crush/crush.db` and outputs the session's message history in
+    a structured text format. Use `--verbose` to see truncated content previews
+    for judgment. Omit `--verbose` for just tool names and line counts.
 
 2. **Review the output** and apply the extraction guidelines from
    `references/extraction-prompt.md`. Identify:
@@ -85,18 +85,29 @@ made, a pattern discovered, an architecture analyzed.
    mkdir -p .crush/memory && echo "$(date +%s)" > .crush/memory/last-consolidated
    ```
 
-### ROUTINE 3: WATCH (background, optional)
+### ROUTINE 3: WATCH (automatic, optional)
 
-For automatic session detection, run the watch script in the background:
-```bash
-bash .agents/skills/memory/scripts/watch.sh &
-```
-
-The watch script monitors `.crush/crush.db` for changes and writes idle session
-IDs to `.crush/memory/pending.jsonl`. At the next session start, ROUTINE 1
-picks these up for processing.
+For automatic session detection, the agent checks for unconsolidated sessions
+at session start using `crush-consolidate --all-unconsolidated`. This replaces
+the previous watch daemon pattern — no background process is needed.
 
 This is optional — you can also just run ROUTINE 2 manually at session end.
+
+## crush-consolidate Reference
+
+```
+crush-consolidate --last [--verbose] [--max-chars N]
+crush-consolidate --session <id> [--verbose]
+crush-consolidate --all-unconsolidated [--verbose] [--max-chars N]
+crush-consolidate --since <duration> [--verbose] [--max-chars N]
+crush-consolidate --last --stats
+crush-consolidate --all-unconsolidated --stats
+```
+
+- `--since <duration>` — sessions updated within duration (e.g. `30m`, `2h`, `1d`)
+- `--stats` — summary only: session headers, token totals, tool usage histogram.
+  No message content. Useful for deciding whether to consolidate before committing
+  the tokens.
 
 ## When to Consolidate
 
