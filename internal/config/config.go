@@ -469,6 +469,7 @@ func allToolNames() []string {
 	return []string{
 		"agent",
 		"bash",
+		"coder",
 		"crush_info",
 		"crush_logs",
 		"job_output",
@@ -538,7 +539,7 @@ func (c *Config) SetupAgents() {
 			Description:  "An agent that helps with executing coding tasks.",
 			Model:        SelectedModelTypeLarge,
 			ContextPaths: c.Options.ContextPaths,
-			AllowedTools: allowedTools,
+			AllowedTools: filterSlice(allowedTools, []string{"coder"}, false),
 		},
 
 		AgentTask: {

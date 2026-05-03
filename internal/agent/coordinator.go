@@ -12,6 +12,7 @@ import (
 	"maps"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -485,6 +486,14 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent) ([]fan
 			return nil, err
 		}
 		allTools = append(allTools, agentTool)
+	}
+
+	if slices.Contains(agent.AllowedTools, CoderToolName) {
+		coderTool, err := c.coderTool(ctx)
+		if err != nil {
+			return nil, err
+		}
+		allTools = append(allTools, coderTool)
 	}
 
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
@@ -1096,6 +1105,17 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 	}
 
 	return nil
+}
+
+// getGitDiffStats runs git diff --stat in the working directory and returns the output.
+func (c *coordinator) getGitDiffStats() string {
+	cmd := exec.Command("git", "diff", "--stat")
+	cmd.Dir = c.cfg.WorkingDir()
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 // discoverSkills runs the skill discovery pipeline and returns both the
